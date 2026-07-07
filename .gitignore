@@ -1,0 +1,44 @@
+# --- Project data (input source files and generated output) ---
+# Keep the folders in git (via .gitkeep) but never commit their contents.
+input/*
+output/*
+!input/.gitkeep
+!output/.gitkeep
+
+# Data / geopackage / spreadsheet artefacts anywhere in the tree
+*.gpkg
+*.gpkg-wal
+*.gpkg-shm
+*.xlsx
+*.xls
+*.csv
+plan_mutations.csv
+plan_warnings.csv
+plan_coverage.csv
+
+# --- Secrets / config ---
+.env
+.env.*
+*.pem
+*.key
+local.settings.json
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# --- Editor / OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
