@@ -316,11 +316,12 @@ def transform_row(r, layer, warn):
             warn(f"unparseable 'Verwachte realisatie' '{vr}'")
         out[p + "jr_vrea"] = yr
 
+    # subs_id holds the actual SDE reference (e.g. 'SDE1913304'). Only copy when
+    # the cell really contains an SDE code; 'Ja'/'Nee'/'deels'/'Per turbine(set)'
+    # etc. are not references and leave the gpkg value untouched.
     sde = clean_text(r.get("SDE"))
-    if sde is not None:
-        low = sde.lower()
-        sde = "Ja" if low == "ja" else "Nee" if low == "nee" else sde
-    put("subs_id", p + "subs_id", sde)
+    if sde is not None and "sde" in sde.lower():
+        put("subs_id", p + "subs_id", sde)
 
     verm = to_float(r.get("Vermogen"))
     prod = to_float(r.get("Productie"))  # header has trailing space; normalized on load
