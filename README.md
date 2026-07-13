@@ -14,20 +14,23 @@ The RES region tracks solar-field and onshore-wind projects in an Excel monitor 
 
 ## Usage
 
+Put the source GeoPackage and monitor Excel in the `input/` folder; all output (the plan CSVs and the updated GeoPackage) is written to `output/`. Filenames passed to `--gpkg` / `--excel` are resolved against `input/` (a full path also works), and the input files are never modified. Both folders are git-ignored except for a `.gitkeep`, so data is never committed.
+
 ```bash
 # dry run: compute and report all mutations, change nothing
 python update_res_gpkg.py --gpkg projecten.gpkg --excel monitor.xlsx
 
-# execute (after reviewing the plan); asks for confirmation, makes a backup first
+# execute (after reviewing the plan); asks for confirmation, then writes an
+# updated *copy* to output/ — the input gpkg is left untouched
 python update_res_gpkg.py --gpkg projecten.gpkg --excel monitor.xlsx --apply
 
 # the monitor sheet is auto-detected (first sheet starting with "Monitor");
-# override with --sheet "Monitor Q2 2026"
+# override with --sheet "Monitor Q2 2026", or the folders with --input-dir/--output-dir
 ```
 
 Requirements: Python 3.9+, `pandas`, `openpyxl`. **No GDAL/GeoPandas needed** — a GeoPackage is a SQLite database, and the script talks to it directly via the stdlib `sqlite3` module.
 
-Every plan run writes three CSVs next to the gpkg for review:
+Every plan run writes three CSVs to the `output/` folder for review:
 
 - `plan_mutations.csv` — every intended change: layer, fid, project id, column, old value, new value
 - `plan_warnings.csv` — everything that needs a human decision (unparseable values, refused overwrites, uncertain mappings)
@@ -43,7 +46,7 @@ Every plan run writes three CSVs next to the gpkg for review:
 
 The full mapping with per-column rationale lives in `kolom_mapping_res_monitor.xlsx`. The short version:
 
-**Direct copies:** `Projectnaam→*_naam`, `Vermogen→*_verm`, `Slaagkans→*_reagr_r`, `Prognose_GWh→*_pr` (its Excel formula, Slaagkans × Productie, is exactly the NP RES definition of `pr`), `SDE→*_subs_id`, `Onderstation→*_ondsta(t)`, `Aantal turbines→wl_aant_t`, `Ashoogte→wl_masth`, `Tiphoogte→wl_tiph`, `Oppervlak zonnepark→zv_opp_pan`.
+**Direct copies:** `Projectnaam→*_naam`, `Vermogen→*_verm`, `Slaagkans→*_reagr_r`, `Prognose_GWh→*_pr` (its Excel formula, Slaagkans × Productie, is exactly the NP RES definition of `pr`), `Onderstation→*_ondsta(t)`, `Aantal turbines→wl_aant_t`, `Ashoogte→wl_masth`, `Tiphoogte→wl_tiph`, `Oppervlak zonnepark→zv_opp_pan`.
 
 **Value maps / transformations:**
 
@@ -53,6 +56,7 @@ The full mapping with per-column rationale lives in `kolom_mapping_res_monitor.x
 - `Lokaal eigendom`: a fraction in Excel (with pollution like `"100%"`, `"25%"`, `" -"`), a 0–100 percentage in the gpkg. Parsed defensively, ×100, and additionally derived into the `*_le` Ja/Nee flag.
 - `Vorm lokaal eigendom`: monitor digits → NP RES letter codes. **The mapping is not positional**: monitor 1 = financiële participatie zonder eigendom → `A (ze)`, 2 = omgevingsfonds → `C (fon)`, 3 = omwonendenregeling → `B (omw)`, and 4 = procesparticipatie has no clean NP RES equivalent — it is mapped to `D (and)` and every occurrence emits a _verify_ warning. Combination strings (`"2,3,4"`, `"1 en 4"`) are parsed and rendered as the corresponding NP RES combination label (`BCD (omw+fon+and)`).
 - `rescode` is the constant `ES05`.
+- `SDE→*_subs_id`: only copied when the monitor cell actually contains an SDE code (e.g. `SDE1913304`, including multi-code `"… en …"` strings). Non-reference values (`Ja`, `Nee`, `Per turbine(set)`, `deels`, `0`) are ignored and leave the existing gpkg value untouched.
 
 **Derived (no Excel source column):** `*_vol_r = round(Productie / Vermogen × 1000)` and `*_pr_plam = Productie × (1 − Slaagkans)`, both validated against the existing gpkg values before adopting the formulas.
 
@@ -60,7 +64,7 @@ The full mapping with per-column rationale lives in `kolom_mapping_res_monitor.x
 
 ## Design decisions in the script
 
-**Two-phase execution.** The plan phase computes every mutation against in-memory copies of both sources and reports them (counts per column, warnings, coverage) before anything is written. This surfaces parse errors, suspicious overwrites and mapping issues early, on the full dataset, instead of halfway through a write. Apply executes exactly the reviewed plan inside a single transaction (rollback on any error) after taking a timestamped backup of the gpkg, and finishes by bumping `last_change` in `gpkg_contents`.
+**Two-phase execution.** The plan phase computes every mutation against in-memory copies of both sources and reports them (counts per column, warnings, coverage) before anything is written. This surfaces parse errors, suspicious overwrites and mapping issues early, on the full dataset, instead of halfway through a write. Apply copies the input gpkg into `output/` (as `<name>_updated_<timestamp>.gpkg`) and executes exactly the reviewed plan on that copy inside a single transaction (rollback on any error), finishing by bumping `last_change` in `gpkg_contents`. The input gpkg is never modified, so it doubles as the backup.
 
 **Per-column kill switches.** `APPLY_COLUMNS` at the top of the script enables/disables each mapping individually, so uncertain mappings (e.g. `opp_pan`, `le_vorm`) can be vetoed without code changes. `jr_vrea` ships disabled.
 
@@ -69,13 +73,13 @@ The full mapping with per-column rationale lives in `kolom_mapping_res_monitor.x
 - `Lokaal eigendom = 0` **is** meaningful (no local ownership) and maps to `Nee`;
 - literal `'0'` strings found _inside gpkg text fields_ (a data quirk, e.g. in `zv_subs_id`) are treated as empty on the gpkg side, so real values can replace them without noise.
 
-**Stopped projects are skipped, not deleted.** Rows with fase `Project gestopt` generate no mutations. If a stopped project still exists in the gpkg it is flagged (`STOPPED_STILL_IN_GPKG`) for a manual removal decision — the script never deletes features.
+**Stopped projects are deleted.** A row with fase `Project gestopt` that still exists in the gpkg generates a `DELETE` mutation — removing every row that shares its project id (relevant for multi-row wind projects) — and is reported as `STOPPED_DELETED`; stopped projects absent from the gpkg are `STOPPED_SKIPPED`. This is governed by the `DELETE_STOPPED` switch at the top of the script; set it to `False` to revert to report-only (`STOPPED_STILL_IN_GPKG`, no deletion).
 
 **New projects are inserted, with placeholder geometry.** Monitor rows without a gpkg counterpart (and not stopped) are inserted with all mapped attributes; wind rows get `wl_tur_id = ES05_{nr}_totaal` following the existing convention. Geometry: a 100 × 100 m square centred on the monitor's X/Y coordinate (RD New / EPSG:28992), written as a hand-assembled GeoPackage binary blob (GP header incl. envelope + WKB MultiPolygon) — enough to make the feature visible in QGIS for proper digitising. Rows without plausible RD coordinates get NULL geometry and a per-project note in the coverage report.
 
-**Plain-sqlite inserts vs. GDAL's rtree triggers.** GeoPackages written by GDAL carry spatial-index triggers that call SQL functions like `ST_IsEmpty` and `ST_MinX` — functions that only exist when GDAL registers them at runtime. Under plain `sqlite3`, any INSERT would fail at statement-prepare time. The script solves this by registering minimal Python implementations of those functions (via `Connection.create_function`) that read the envelope straight from the geometry blob header. Verified after apply: the rtree entry count matches the non-NULL geometry count, and GDAL's `gpkg_ogr_contents` feature-count triggers fire correctly.
+**Plain-sqlite inserts vs. GDAL's rtree triggers.** GeoPackages written by GDAL carry spatial-index triggers that call SQL functions like `ST_IsEmpty` and `ST_MinX` — functions that only exist when GDAL registers them at runtime. Under plain `sqlite3`, any INSERT/UPDATE/DELETE would fail at statement-prepare time. The script solves this by registering minimal Python implementations of those functions (via `Connection.create_function`) that read the envelope straight from the geometry blob header. Verified after apply: the rtree entry count matches the non-NULL geometry count, and GDAL's `gpkg_ogr_contents` feature-count triggers fire correctly.
 
-**Coverage as a first-class output.** Every project ends up in exactly one bucket — matched, `NEW_IN_EXCEL`, `ONLY_IN_GPKG`, `STOPPED_SKIPPED`, or `STOPPED_STILL_IN_GPKG` — so gaps between the two sources are always explicit rather than silently absorbed.
+**Coverage as a first-class output.** Every project ends up in exactly one bucket — matched, `NEW_IN_EXCEL`, `ONLY_IN_GPKG`, `STOPPED_SKIPPED`, or `STOPPED_DELETED` (`STOPPED_STILL_IN_GPKG` when `DELETE_STOPPED` is off) — so gaps between the two sources are always explicit rather than silently absorbed.
 
 ## Known data quirks
 
@@ -88,4 +92,4 @@ Documented here because they will bite again:
 
 - Geometry is never _updated_ for existing projects — the monitor only has a point coordinate, the gpkg needs polygons. Placeholder squares and NULL-geometry inserts must be digitised in QGIS.
 - The `le_vorm` code-4 mapping and the `opp_pan` semantics (panel area vs. park area) remain judgement calls; both are flagged in warnings / the mapping workbook.
-- Deletions (stopped projects, obsolete gpkg-only rows) are reported, never executed.
+- Stopped-project deletions are executed on apply (see the `DELETE_STOPPED` switch). Obsolete gpkg-only rows (`ONLY_IN_GPKG`) are still only reported, never deleted.
