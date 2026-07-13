@@ -7,9 +7,10 @@ Two-phase:
   1. PLAN  (default)  - reads both files, computes every mutation, prints a
      summary (mutations per column, inserts, warnings, coverage) and writes
      plan_mutations.csv / plan_warnings.csv / plan_coverage.csv next to the gpkg.
-  2. APPLY (--apply)  - makes a timestamped backup of the gpkg, then executes
-     the exact mutations from the plan (attribute UPDATEs + INSERTs for new
-     projects with a placeholder square geometry at the monitor X/Y).
+  2. APPLY (--apply)  - copies the input gpkg into the output folder and executes
+     the exact mutations from the plan on that copy: attribute UPDATEs, INSERTs for
+     new projects (placeholder square geometry at the monitor X/Y), and DELETEs for
+     projects the monitor marks 'Project gestopt' (toggle via DELETE_STOPPED).
 
 Files are read from the input/ folder and results (plan CSVs + updated gpkg)
 are written to the output/ folder. The input files are never modified.
@@ -91,6 +92,11 @@ FASE_MAP = {
     "voortraject": "voortraject",
 }
 FASE_STOPPED = "project gestopt"
+
+# When True, projects whose Excel Fase is 'Project gestopt' and that still exist
+# in the gpkg are DELETED (every row sharing that project id). When False they are
+# only reported (STOPPED_STILL_IN_GPKG) and left in place.
+DELETE_STOPPED = True
 
 GEMCODE = {
     "dalfsen": "GM0148", "deventer": "GM0150", "hardenberg": "GM0160",
@@ -394,9 +400,17 @@ def build_plan(con, excel_df):
 
             if stopped:
                 if gid in gpkg_ids:
-                    coverage.append([layer, gid, r.get("Projectnaam"),
-                                     "STOPPED_STILL_IN_GPKG",
-                                     "Excel says 'Project gestopt' but project exists in gpkg - remove manually if desired"])
+                    if DELETE_STOPPED:
+                        fid = gpkg_ids[gid]
+                        name_col = "zv_naam" if layer == "zov" else "wl_naam_p"
+                        mutations.append([layer, "DELETE", gid, fid, "(delete row)",
+                                          gpkg_rows[fid].get(name_col), ""])
+                        coverage.append([layer, gid, r.get("Projectnaam"), "STOPPED_DELETED",
+                                         "Excel says 'Project gestopt' -> row(s) deleted from gpkg"])
+                    else:
+                        coverage.append([layer, gid, r.get("Projectnaam"),
+                                         "STOPPED_STILL_IN_GPKG",
+                                         "Excel says 'Project gestopt' but project exists in gpkg - remove manually if desired"])
                 else:
                     coverage.append([layer, gid, r.get("Projectnaam"), "STOPPED_SKIPPED", ""])
                 continue
@@ -444,11 +458,13 @@ def build_plan(con, excel_df):
 def print_summary(mutations, warnings, coverage):
     upd = [m for m in mutations if m[1] == "UPDATE"]
     ins = [m for m in mutations if m[1] == "INSERT"]
+    dels = [m for m in mutations if m[1] == "DELETE"]
 
     print("\n" + "=" * 70)
     print("PLAN SUMMARY")
     print("=" * 70)
-    print(f"Cell updates: {len(upd)}   New projects to insert: {len(ins)}   Warnings: {len(warnings)}")
+    print(f"Cell updates: {len(upd)}   New projects to insert: {len(ins)}   "
+          f"Projects to delete: {len(dels)}   Warnings: {len(warnings)}")
 
     if upd:
         counts = {}
@@ -463,6 +479,11 @@ def print_summary(mutations, warnings, coverage):
         for m in ins:
             print(f"  {m[0]:4s} {m[2]}")
 
+    if dels:
+        print("\nProjects to delete (Project gestopt):")
+        for m in dels:
+            print(f"  {m[0]:4s} {m[2]}  {m[5]}")
+
     cats = {}
     for c in coverage:
         cats.setdefault(c[3], []).append(c)
@@ -470,7 +491,7 @@ def print_summary(mutations, warnings, coverage):
     for cat, rows in sorted(cats.items()):
         print(f"  {cat}: {len(rows)}")
         for r in rows:
-            if cat in ("ONLY_IN_GPKG", "STOPPED_STILL_IN_GPKG", "NEW_IN_EXCEL"):
+            if cat in ("ONLY_IN_GPKG", "STOPPED_STILL_IN_GPKG", "STOPPED_DELETED", "NEW_IN_EXCEL"):
                 print(f"    {r[0]:4s} {str(r[1]):12s} {str(r[2])[:45]:45s} {r[4]}")
 
     if warnings:
@@ -511,7 +532,7 @@ def apply_plan(gpkg_path, mutations, output_dir):
     con = sqlite3.connect(dest)
     register_st_functions(con)
     cur = con.cursor()
-    n_upd = n_ins = 0
+    n_upd = n_ins = n_del = 0
     try:
         for m in mutations:
             layer, action = m[0], m[1]
@@ -520,6 +541,11 @@ def apply_plan(gpkg_path, mutations, output_dir):
                 _, _, gid, fid, col, _, new = m[:7]
                 cur.execute(f'UPDATE "{table}" SET "{col}" = ? WHERE fid = ?', (new, fid))
                 n_upd += 1
+            elif action == "DELETE":
+                id_col = LAYERS[layer]["id_col"]
+                gid = m[2]
+                cur.execute(f'DELETE FROM "{table}" WHERE "{id_col}" = ?', (gid,))
+                n_del += cur.rowcount if cur.rowcount != -1 else 1
             elif action == "INSERT":
                 payload = m[7]
                 vals = payload["values"]
@@ -539,7 +565,7 @@ def apply_plan(gpkg_path, mutations, output_dir):
         raise
     finally:
         con.close()
-    print(f"Applied: {n_upd} cell updates, {n_ins} inserts. "
+    print(f"Applied: {n_upd} cell updates, {n_ins} inserts, {n_del} rows deleted. "
           f"Original input left untouched at {gpkg_path}.")
 
 
