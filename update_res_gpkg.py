@@ -21,7 +21,8 @@ Usage:
 
 Requires: pandas, openpyxl. Pure sqlite3 for the gpkg (no GDAL needed).
 
-Transformation logic follows kolom_mapping_res_monitor.xlsx. Per-column
+Transformation logic is encoded in this file (originally derived from an
+external column-mapping workbook that is not part of this repo). Per-column
 switches live in APPLY_COLUMNS below, so you can veto individual mappings
 (e.g. the uncertain ones) without touching the code.
 """

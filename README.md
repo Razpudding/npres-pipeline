@@ -8,9 +8,7 @@ The RES region tracks solar-field and onshore-wind projects in an Excel monitor 
 
 | File                                    | Purpose                                                                                                                                                                                                                                                                                                               |
 | --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `update_res_gpkg.py`                    | Two-phase update script (plan → apply)                                                                                                                                                                                                                                                                                |
-| `kolom_mapping_res_monitor.xlsx`        | Column mapping workbook: per gpkg column the matched Excel column, match confidence, required transformation, and comments. Also contains ID-coverage analysis and a value/format differences report between the two sources. Editable — this is the source of truth for the mapping decisions encoded in the script. |
-| `NP_RES_data_portaal_instructies_*.pdf` | NP RES documentation of the GeoPackage data model (attribute descriptions per layer)                                                                                                                                                                                                                                  |
+| `update_res_gpkg.py`                    | Two-phase update script (plan → apply)                                                                                                                                                                                                                                                                                || `NP_RES_data_portaal_instructies_*.pdf` | NP RES documentation of the GeoPackage data model (attribute descriptions per layer)                                                                                                                                                                                                                                  |
 
 ## Usage
 
@@ -38,13 +36,13 @@ Every plan run writes three CSVs to the `output/` folder for review:
 
 ## How the two datasets relate
 
-- **Join key:** Excel column `Nr.` (integer) ↔ gpkg `zv_prj_id` / `wl_prj_id` as `"ES05_" + Nr`. Leading zeros in Excel are display formatting only, so `Nr` is cast to `int` before concatenating. The join is per layer: Excel `Type` routes rows to `npres_zov_v4` (`Zon-op-veld`) or `npres_wol_v4` (`Wind`); `Zon-op-dak` rows are out of scope. `Nr` values may repeat _across_ types (e.g. Nr 116 exists as both a solar and a wind project), which is safe because the effective key is `Nr + Type`.
+- **Join key:** Excel column `Nr.` (integer) ↔ gpkg `zv_prj_id` / `wl_prj_id` as `"ES05_" + Nr`. Leading zeros in Excel are display formatting only, so `Nr` is cast to `int` before concatenating. The join is per layer: Excel `Type` routes rows to `npres_zov_v4` (`Zon-op-veld`) or `npres_wol_v4` (`Wind`); `Zon-op-dak` rows are out of scope.
 - **Snapshot difference:** the gpkg represents an earlier reporting round (Q4 2025); the monitor is current (Q2 2026). Most value differences are therefore legitimate progress: phases advanced, Slaagkans changed, production figures updated.
 - **The Excel is leading** for all mapped attribute columns. The gpkg remains leading for everything the monitor doesn't track (geometry, trede, opslag, transportcapaciteit, …) and for a small set of "special case" rows that intentionally exist only in the gpkg — those are reported but never touched.
 
 ## Column mapping (summary)
 
-The full mapping with per-column rationale lives in `kolom_mapping_res_monitor.xlsx`. The short version:
+The mapping is encoded directly in the script — `APPLY_COLUMNS` plus the `transform_row` logic — which is the source of truth. (It was originally derived from a column-mapping workbook that is **not** part of this repo, as it contains sensitive data.) The short version:
 
 **Direct copies:** `Projectnaam→*_naam`, `Vermogen→*_verm`, `Slaagkans→*_reagr_r`, `Prognose_GWh→*_pr` (its Excel formula, Slaagkans × Productie, is exactly the NP RES definition of `pr`), `Onderstation→*_ondsta(t)`, `Aantal turbines→wl_aant_t`, `Ashoogte→wl_masth`, `Tiphoogte→wl_tiph`, `Oppervlak zonnepark→zv_opp_pan`.
 
@@ -91,5 +89,26 @@ Documented here because they will bite again:
 ## Limitations / manual follow-up
 
 - Geometry is never _updated_ for existing projects — the monitor only has a point coordinate, the gpkg needs polygons. Placeholder squares and NULL-geometry inserts must be digitised in QGIS.
-- The `le_vorm` code-4 mapping and the `opp_pan` semantics (panel area vs. park area) remain judgement calls; both are flagged in warnings / the mapping workbook.
+- The `le_vorm` code-4 mapping and the `opp_pan` semantics (panel area vs. park area) remain judgement calls; both are flagged in warnings.
 - Stopped-project deletions are executed on apply (see the `DELETE_STOPPED` switch). Obsolete gpkg-only rows (`ONLY_IN_GPKG`) are still only reported, never deleted.
+
+## `zv_trede` suggestions — FOR MANUAL REVIEW (not applied)
+
+Suggested `zv_trede` values for Zon-op-Veld projects that currently have no value, derived by overlaying `npres_zov_v4` with the Tredenkaart (`NPRES Dataportaal/Tredenkaart_ES05/Tredenkaart_ES05.gpkg`). Method: take each project's guaranteed-inside center point (`ST_PointOnSurface`) and test which trede-layer polygon contains it, checking `trede4 → trede3 → trede2`, first match wins. `trede1_gebouwen` is not tested (per-building layer, irrelevant for field solar). Both layers are EPSG:28992; no reprojection.
+
+**⚠️ These are suggestions only — nothing was written to any GeoPackage. Review before use.** When the same method is validated against the 44 projects that *already* have a `zv_trede`, it only reproduces the existing value in **25 of 44 cases (57%)**, disagreeing in both directions. So the automated overlay is not reliable enough to trust blindly; treat the values below as a starting point, especially the ambiguous rows.
+
+| zv_prj_id | Project | Gemeente | Suggested | Trede layers the center falls in |
+| --------- | ------- | -------- | --------- | -------------------------------- |
+| ES05_76   | Onder de Gelder            | GM1773 | Trede 4 | 4 (only)      |
+| ES05_88   | Blokzijl "De Hoop"         | GM1708 | Trede 4 | 4 (only)      |
+| ES05_104  | Energielandgoed Raalte     | GM0177 | Trede 4 | 4 (only)      |
+| ES05_109  | Zonnepark Marshoek         | GM0148 | Trede 4 | 4 (only)      |
+| ES05_112  | Zonnepark Holterweg        | GM0150 | Trede 4 | 4 (only)      |
+| ES05_113  | Zonnepark Bussinksweg      | GM0150 | Trede 4 | 4 (only)      |
+| ES05_116  | Zandwinplas Hasselt        | GM1896 | Trede 3 | 3 (only)      |
+| ES05_122  | Eeser Campus               | GM1708 | Trede 2 | 2 (only)      |
+| ES05_120  | Zonneveld vd Valk          | GM0193 | Trede 4 ⚠️ | **2, 3 and 4** — ambiguous, rule picked 4 |
+| ES05_121  | Zonneveld A28 (OER project)| GM0193 | Trede 4 ⚠️ | **2, 3 and 4** — ambiguous, rule picked 4 |
+
+The first 8 projects fall inside exactly one trede layer, so those suggestions are unambiguous (subject to the overall 57% caveat). **ES05_120** and **ES05_121** fall inside all three of trede2/3/4 simultaneously — the 4→3→2 order picked `Trede 4`, but `Trede 2` or `Trede 3` are equally defensible; decide these by hand.
