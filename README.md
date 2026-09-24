@@ -40,6 +40,25 @@ Every plan run writes three CSVs to the `output/` folder for review:
 - **Snapshot difference:** the gpkg represents an earlier reporting round (Q4 2025); the monitor is current (Q2 2026). Most value differences are therefore legitimate progress: phases advanced, Slaagkans changed, production figures updated.
 - **The Excel is leading** for all mapped attribute columns. The gpkg remains leading for everything the monitor doesn't track (geometry, trede, opslag, transportcapaciteit, …) and for a small set of "special case" rows that intentionally exist only in the gpkg — those are reported but never touched.
 
+## Project-ID history (`npres_wol_v4`)
+
+**Project ids are per layer.** `ES05_116` exists independently in `npres_zov_v4` (Zandwinplas Hasselt, GM1896) and in `npres_wol_v4` — they are unrelated projects that happen to share a number. Never join across layers on the id alone.
+
+Ids in the wind layer have been renumbered and pruned by hand, so a bare id is not stable over time. The mapping below is the record of that; without it, the same project looks like two different ones.
+
+| gpkg id (old) | now | Project | What happened |
+| ------------- | --- | ------- | ------------- |
+| `ES05_116` | **`ES05_123`** | Windpark Groen (Steenwijkerland) | Renumbered between 2026-07-07 and 2026-07-13. Its geometry was the entire 321 km² gemeente polygon; replaced 2026-07-20 with a 10 × 10 m placeholder (`..._prebackup_fixgeom116_...`). `wl_gemcode` was the wrong `GM1896` — corrected to `GM1708`. |
+| `ES05_127` | *(deleted)* | Haarst-De Ruit | `ONLY_IN_GPKG`, no monitor row. Deleted 2026-07-20 (`..._prebackup_delete127_133_...`). Sits 2.3 km from ES05_105, so it reads like a superseded Genne-Haerst delineation — but it is **not** the same project as ES05_105. |
+| `ES05_133` | *(deleted)* | Deventer | `ONLY_IN_GPKG`, no monitor row. Deleted 2026-07-20, same step. |
+| `ES05_110` | *(deleted)* | Dalfserveld-west (deel Wind) | `Project gestopt` in the Q2 monitor → `STOPPED_DELETED`. |
+| — | `ES05_94` | Broeklanden (Hardenberg) | `NEW_IN_EXCEL` in Q2 2026. No X/Y in the monitor → inserted with NULL geometry, still to be digitised. |
+| — | `ES05_119` | Kloosterhaar (Hardenberg) | `NEW_IN_EXCEL` in Q2 2026. Same: NULL geometry, still to be digitised. |
+
+**Placeholder rows carry the gemeente name, not the project name.** Where the monitor has a real name, the gpkg may still hold a bare municipality: `Kampen` = Windpark N50 (ES05_098), `Staphorst` = Windpark Rouveen-Oost (ES05_118), `Steenwijkerland` = Windpark Groen (ES05_123). Matching on name will therefore fail — always match on `"ES05_" + int(Nr)`.
+
+**The `data_aanlevering_WO_*.gpkg` branch.** The hand-maintained aanlevering GeoPackage under `NPRES Dataportaal/` descends from this lineage but branched *before* the 2026-07-20 corrections, so it carried the pre-renumber ids for months. It is not redundant: it holds the per-turbine digitising (one row per turbine, ~47 rows) that the pipeline output never had (one placeholder row per project). Reconciled against the Q2 monitor on 2026-09-24 — the wind-layer project set now matches both the monitor and `output/projecten_geopackage_2026_0_updated.gpkg` exactly. When diagnosing discrepancies, diff against that file first; the output filenames double as a log of the manual steps taken.
+
 ## Column mapping (summary)
 
 The mapping is encoded directly in the script — `APPLY_COLUMNS` plus the `transform_row` logic — which is the source of truth. (It was originally derived from a column-mapping workbook that is **not** part of this repo, as it contains sensitive data.) The short version:
@@ -89,8 +108,32 @@ Documented here because they will bite again:
 ## Limitations / manual follow-up
 
 - Geometry is never _updated_ for existing projects — the monitor only has a point coordinate, the gpkg needs polygons. Placeholder squares and NULL-geometry inserts must be digitised in QGIS.
-- The `le_vorm` code-4 mapping and the `opp_pan` semantics (panel area vs. park area) remain judgement calls; both are flagged in warnings.
+- The `le_vorm` code-4 mapping remains a judgement call, flagged in warnings.
+- **`opp_pan` — resolved 2026-09-24: do not sync.** The two sources measure different things. The monitor's `Oppervlak zonnepark` (which the script copies, `update_res_gpkg.py:358`) is the **area of the whole park**; NP RES asks for the **area of the PV panels**, which is what the aanlevering gpkg holds — derived in an earlier round from the panel count, hence its long decimals (`12.3456790123457` vs the monitor's `6.7`). The gpkg values are leading. Accept that newly inserted projects have a gap here until the panel area is worked out by hand.
 - Stopped-project deletions are executed on apply (see the `DELETE_STOPPED` switch). Obsolete gpkg-only rows (`ONLY_IN_GPKG`) are still only reported, never deleted.
+
+### Open digitising queue — carry forward to the next update
+
+These rows exist with full attributes but **no usable geometry**, so they do not render in QGIS and are invisible on any map product. The monitor has no X/Y for them, so the script could not even place a placeholder square. Digitise before the next aanlevering.
+
+| Layer | Project | Naam | Gemeente | Geometry now |
+| ----- | ------- | ---- | -------- | ------------ |
+| `npres_wol_v4` | `ES05_94`  | Broeklanden   | Hardenberg      | NULL |
+| `npres_wol_v4` | `ES05_119` | Kloosterhaar  | Hardenberg      | NULL |
+| `npres_zov_v4` | `ES05_120` | Zonneveld vd Valk | Zwolle      | NULL |
+| `npres_zov_v4` | `ES05_121` | Zonneveld A28 (OER project) | Zwolle | NULL |
+
+Two more carry a **placeholder square** rather than a real footprint — legible on a map but not an actual delineation, so they still need digitising: `npres_wol_v4 ES05_123` (Windpark Groen, 10 × 10 m) and `npres_zov_v4 ES05_122` (Eeser Campus, 100 × 100 m).
+
+To find these at any time — NULL geometry, and placeholder squares by their tell-tale exact areas:
+
+```sql
+SELECT wl_prj_id, wl_naam_p FROM npres_wol_v4 WHERE geom IS NULL
+UNION ALL
+SELECT zv_prj_id, zv_naam   FROM npres_zov_v4 WHERE geom IS NULL;
+```
+
+Note for the wind layer: a digitised project should end up with **one row per turbine**, and `wl_verm` / `wl_pr` are then **per turbine**, not park totals (rows are summed downstream). ES05_94 currently holds 12 MW on a single row for `wl_aant_t` = 2 — splitting it into two turbines means 6 MW each.
 
 ## `zv_trede` suggestions — FOR MANUAL REVIEW (not applied)
 
