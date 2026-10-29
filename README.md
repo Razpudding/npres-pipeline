@@ -59,6 +59,8 @@ Ids in the wind layer have been renumbered and pruned by hand, so a bare id is n
 
 **The `data_aanlevering_WO_*.gpkg` branch.** The hand-maintained aanlevering GeoPackage under `NPRES Dataportaal/` descends from this lineage but branched *before* the 2026-07-20 corrections, so it carried the pre-renumber ids for months. It is not redundant: it holds the per-turbine digitising (one row per turbine, ~47 rows) that the pipeline output never had (one placeholder row per project). Reconciled against the Q2 monitor on 2026-09-24 — the wind-layer project set now matches both the monitor and `output/projecten_geopackage_2026_0_updated.gpkg` exactly. When diagnosing discrepancies, diff against that file first; the output filenames double as a log of the manual steps taken.
 
+**Wind-layer attributes synced to the Q2 monitor on 2026-10-19** (the zov layer had been done on 2026-09-24). Changed: `ES05_95` 60 → 42 MW and 10 → 7 turbines (`vol_r` 3333, `pr`/`pr_plam` recomputed); `ES05_114` `reagr_r` 0.5 → 0.1 (`pr`/`pr_plam` recomputed); `ES05_32`/`ES05_33` now in production — `fase` → `huidig`, `reagr_r` 1.0, `pr` 9.9, `pr_plam` 0, `dt_vv` 2023-04-01, `dt_rea` 2025-12-01; `wl_ondstat` filled from the monitor (left empty where the monitor says `nb`/`nnb` or is blank: ES05_95, ES05_114, ES05_123). Net effect: `pr` −37.1 GWh, `pr_plam` −23.9 GWh. **Deliberately left as-is:** ~1 % `vol_r`/`pr` rounding differences against the monitor (ES05_115/117/118/098/32/33), the gemeente-name placeholders above, and ES05_62's turbine count and heights (blank in the monitor — blanks never clear gpkg values).
+
 ## Column mapping (summary)
 
 The mapping is encoded directly in the script — `APPLY_COLUMNS` plus the `transform_row` logic — which is the source of truth. (It was originally derived from a column-mapping workbook that is **not** part of this repo, as it contains sensitive data.) The short version:
@@ -77,7 +79,28 @@ The mapping is encoded directly in the script — `APPLY_COLUMNS` plus the `tran
 
 **Derived (no Excel source column):** `*_vol_r = round(Productie / Vermogen × 1000)` and `*_pr_plam = Productie × (1 − Slaagkans)`, both validated against the existing gpkg values before adopting the formulas.
 
+The official NP RES definition is `*_pr_plam = *_verm × *_vol_r / 1000 × (1 − *_reagr_r)` — i.e. from the *stored* `vol_r`, which is rounded to whole hours. The script's `Productie`-based formula therefore differs from it by a rounding margin (well under 1 %); accepted as-is. Hand edits in the aanlevering gpkg use the official formula, so a pipeline run can shift those values by that margin.
+
 **Deliberately unmapped:** `zv_trede` (the monitor's "Type zonnepark" values were tested against it — no correlation; they encode the provincial zonneladder, not the national voorkeursvolgorde), `*_bev_gez` (the monitor's "Omgevingsvergunning" is a Ja/Nee _granted_ flag, not the bestuurslaag), `zv_jr_vrea` (source column is nearly empty and contains junk like Excel-serial dates and `"22/23"` — disabled by default), and everything the monitor simply doesn't track (`tra_cap`, `opslag`, `rol`, `bgt_id`, `brt_id`, `verm_om`, `le_part`).
+
+### `Vollasturen` column in the monitor Excel (added 2026-10-20)
+
+In `RES West monitor_data_26_Q4.xlsx`, sheet `Data Veld+Wind (Q2'26)`, a `Vollasturen` column (V) was inserted between `Vermogen` (U) and `Productie` (W), so that `Productie [GWh] = Vermogen [MW] × Vollasturen [h] / 1000`. `Productie` itself was **not** changed. The column was inserted in Excel (so all references in `Monitor`, pivots and slicers shifted correctly); values were then written cell-by-cell. Every written cell, and the header, has a **red background**. Projects with status `0 Project gestopt` were left empty.
+
+How each value was derived:
+
+| Layer | Rule | Count (active projects) |
+| ----- | ---- | ----------------------- |
+| Wind | Formula `=IF(AND(U>0,W>0),ROUND(W/U*1000,0),"")` — same definition as gpkg `wl_vol_r` | 22 |
+| Zon, group A | `Productie` is a formula `=U×0.9` or `=U×0.95` → the factor × 1000 (**900** / **950**), written as a fixed value | 10 × 900, 2 × 950 |
+| Zon, group B | `Productie` is a fixed value or an area-based formula (`=ha × 0.8182`, with `Vermogen` back-calculated as `Productie / 0.9`), and `Productie / Vermogen × 1000` is exactly 900 or 950 → that value | 14 × 900, 16 × 950 |
+| Zon, group C | `Productie / Vermogen × 1000` is not a standard value — most have a rounded, presumably real `Productie` estimate → the **rounded ratio**, written as-is | 12 (see below) |
+
+Group C (non-standard, kept deliberately): ID 41 Zonneweide Lierderholthuis 833, 60 Oldemarkt 833, 7 Waterberging Broekland 886, 122 Eeser Campus 899, 116 Zandwinplas Hasselt 938, 13 Zonnepark Lus afrit 23 A1 952, 12 Locatie Waterschap 953, 5 Zandwinplas Luttenberg 954, 104 Energielandgoed Raalte 957, 22 Zonnepark Hardenberg 964, 37 Zonnepark en dak Vollenhove waterschap 967, 54 Zonnepark Weekhorst 972.
+
+Solar values are **fixed numbers**, not formulas: if `Vermogen` or `Productie` changes for a solar project, update its `Vollasturen` by hand. The script still derives `*_vol_r` from `Productie / Vermogen`; it could read this column directly in future (it matches on header names, so the inserted column does not break it).
+
+Other red cells in the same sheet (same date, copied from the aanlevering gpkg): `X_coordinaat`/`Y_coordinaat` for 25 projects (12 filled blanks — 5 of them placeholder locations, see the digitising queue — and 13 corrected by 100–711 m, using the centre of the gpkg geometry), and `Aantal turbines`/`Ashoogte`/`Tiphoogte` for ES05_62 Tolhuislanden (4 / 85 / 125.5 — identical to ES05_2 Westenwind, unverified).
 
 ## Design decisions in the script
 
@@ -114,23 +137,26 @@ Documented here because they will bite again:
 
 ### Open digitising queue — carry forward to the next update
 
-These rows exist with full attributes but **no usable geometry**, so they do not render in QGIS and are invisible on any map product. The monitor has no X/Y for them, so the script could not even place a placeholder square. Digitise before the next aanlevering.
+All rows now have a geometry (2026-10-19), but these seven carry a **placeholder square** rather than a real footprint — legible on a map, not an actual delineation. Replace with real footprints once locations are known. Convention: wind placeholder = 25 × 25 m square (individual turbines not yet known), solar placeholder = 100 × 100 m square.
 
-| Layer | Project | Naam | Gemeente | Geometry now |
-| ----- | ------- | ---- | -------- | ------------ |
-| `npres_wol_v4` | `ES05_94`  | Broeklanden   | Hardenberg      | NULL |
-| `npres_wol_v4` | `ES05_119` | Kloosterhaar  | Hardenberg      | NULL |
-| `npres_zov_v4` | `ES05_120` | Zonneveld vd Valk | Zwolle      | NULL |
-| `npres_zov_v4` | `ES05_121` | Zonneveld A28 (OER project) | Zwolle | NULL |
+| Layer | Project | Naam | Gemeente | Placeholder centre (RD) | Source of location |
+| ----- | ------- | ---- | -------- | ----------------------- | ------------------ |
+| `npres_wol_v4` | `ES05_94`  | Broeklanden | Hardenberg | 239591, 508168 | coordinates supplied by user |
+| `npres_wol_v4` | `ES05_119` | Kloosterhaar | Hardenberg | 242984, 502996 | village centroid (PDOK) — rough, not a real turbine site |
+| `npres_wol_v4` | `ES05_123` | Windpark Groen | Steenwijkerland | 198395, 529995 | earlier placeholder (was 10 × 10 m) |
+| `npres_zov_v4` | `ES05_120` | Zonneveld vd Valk | Zwolle | 207331, 505283 | Van der Valk Hotel, Nieuwleusenerdijk 1 (~3 ha park next to the hotel) |
+| `npres_zov_v4` | `ES05_121` | Zonneveld A28 (OER project) | Zwolle | 208276, 505397 | Hessenpoort centroid — rough; actual candidate sites are a strip by Hessenpoort and the A28 Ommen-exit slope (~1.86 ha total) |
+| `npres_zov_v4` | `ES05_122` | Eeser Campus | Steenwijkerland | 205210, 535253 | monitor X/Y (address Eeser Campus 30 is ~820 m away, at 205843, 534724) |
+| `npres_zov_v4` | `ES05_37`  | Zonnepark en dak Vollenhove waterschap | Steenwijkerland | 192949, 520583 | monitor X/Y, ~70 m from the address Noordwal 7, 8325PP Vollenhove (WDOD). Added 2026-10-20: the old geometry was a 2 × 2 m marker at 208686, 488648 near Raalterweg, Wijhe (wrong municipality, 35.6 km off), present since `projecten_geopackage_2025_q4` |
 
-Two more carry a **placeholder square** rather than a real footprint — legible on a map but not an actual delineation, so they still need digitising: `npres_wol_v4 ES05_123` (Windpark Groen, 10 × 10 m) and `npres_zov_v4 ES05_122` (Eeser Campus, 100 × 100 m).
-
-To find these at any time — NULL geometry, and placeholder squares by their tell-tale exact areas:
+To find placeholders at any time — NULL geometry, or a bounding box of exactly 25 m (wind) / 100 m (solar) wide in the rtree:
 
 ```sql
-SELECT wl_prj_id, wl_naam_p FROM npres_wol_v4 WHERE geom IS NULL
+SELECT t.wl_prj_id, t.wl_naam_p FROM npres_wol_v4 t LEFT JOIN rtree_npres_wol_v4_geom r ON r.id = t.fid
+ WHERE t.geom IS NULL OR ROUND(r.maxx - r.minx, 1) = 25.0 AND ROUND(r.maxy - r.miny, 1) = 25.0
 UNION ALL
-SELECT zv_prj_id, zv_naam   FROM npres_zov_v4 WHERE geom IS NULL;
+SELECT t.zv_prj_id, t.zv_naam FROM npres_zov_v4 t LEFT JOIN rtree_npres_zov_v4_geom r ON r.id = t.fid
+ WHERE t.geom IS NULL OR ROUND(r.maxx - r.minx, 1) = 100.0 AND ROUND(r.maxy - r.miny, 1) = 100.0;
 ```
 
 Note for the wind layer: a digitised project should end up with **one row per turbine**, and `wl_verm` / `wl_pr` are then **per turbine**, not park totals (rows are summed downstream). ES05_94 currently holds 12 MW on a single row for `wl_aant_t` = 2 — splitting it into two turbines means 6 MW each.
